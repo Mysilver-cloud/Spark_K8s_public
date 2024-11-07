@@ -1,0 +1,87 @@
+# Dependencies Container Image
+# Install wget to retrieve Spark runtime components,
+# extract to temporary directory, copy to the desired image
+FROM ubuntu:24.04 AS deps
+
+RUN apt-get update && apt-get -y install wget
+WORKDIR /tmp
+RUN wget https://dlcdn.apache.org/spark/spark-3.5.3/spark-3.5.3-bin-hadoop3.tgz \
+	&& tar xvzf spark-3.5.3-bin-hadoop3.tgz 
+
+
+# Runtime Container Image. Adapted from the official Spark runtime 
+# image from the project repository at https://github.com/apache/spark.
+FROM openjdk:17.0.1-jdk-slim AS build
+
+# Spark UID
+ARG spark_uid=185
+ARG spark_username=sparkuser
+
+# Install Spark Dependencies and Prepare Spark Runtime Environment
+RUN set -ex && \
+    apt-get update && \
+    ln -s /lib /lib64 && \
+    apt install -y bash tini libc6 libpam-modules krb5-user libnss3 procps net-tools && \
+    mkdir -p /opt/spark && \
+    mkdir -p /opt/spark/examples && \
+    mkdir -p /opt/spark/work-dir && \
+    touch /opt/spark/RELEASE && \
+    rm /bin/sh && \
+    ln -sv /bin/bash /bin/sh && \
+    echo "auth required pam_wheel.so use_uid" >> /etc/pam.d/su && \
+    chgrp root /etc/passwd && chmod ug+rw /etc/passwd && \
+    rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && \
+    # Create a user with UID and username for better security context
+    adduser --disabled-password --gecos '' --uid ${spark_uid} ${spark_username} && \
+    # Ensure the user has a valid home directory and permissions
+    mkdir -p /home/${spark_username} && \
+    chown ${spark_uid}:${spark_uid} /home/${spark_username}
+
+RUN chown -R sparkuser:sparkuser /opt/spark && \
+    chmod -R 775 /opt/spark
+
+# Install Kerberos Client and Auth Components
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt install -yqq krb5-user \
+  && rm -rf /var/cache/apt/*
+
+
+# Copy previously fetched runtime components
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/bin /opt/spark/bin
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/jars /opt/spark/jars
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/python /opt/spark/python
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/R /opt/spark/R
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/sbin /opt/spark/sbin
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/yarn /opt/spark/yarn
+
+# Copy Docker entry script
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/kubernetes/dockerfiles/spark/entrypoint.sh /opt/
+
+# COpy examples, data, and tests
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/examples /opt/spark/examples
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/data /opt/spark/data
+COPY --from=deps /tmp/spark-3.5.3-bin-hadoop3/kubernetes/tests /opt/spark/tests
+
+# Replace out of date dependencies causing a 403 error on job launch
+# WORKDIR /tmp
+# RUN cd /tmp \
+#   && wget https://oak-tree.tech/documents/59/kubernetes-client-4.6.4.jar \
+#   && wget https://oak-tree.tech/documents/58/kubernetes-model-4.6.4.jar \
+#   && wget https://oak-tree.tech/documents/57/kubernetes-model-common-4.6.4.jar \
+#   && rm -rf /opt/spark/jars/kubernetes-client-* \
+#   && rm -rf /opt/spark/jars/kubernetes-model-* \
+#   && rm -rf /opt/spark/jars/kubernetes-model-common-* \
+#   && mv /tmp/kubernetes-* /opt/spark/jars/
+
+
+# Set Spark runtime options
+ENV SPARK_HOME /opt/spark
+
+WORKDIR /opt/spark/work-dir
+RUN chmod g+w /opt/spark/work-dir
+
+ENTRYPOINT [ "/opt/entrypoint.sh" ]
+
+# Specify the User that the actual main process will run as
+USER ${spark_username}

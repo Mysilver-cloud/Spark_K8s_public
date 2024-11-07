@@ -1,0 +1,23 @@
+FROM myrepo/spark-k8s:<tagname>
+
+# Install kubectl
+USER root
+RUN mkdir -p /etc/apt/keyrings \
+  && apt-get install -y apt-transport-https ca-certificates curl gpg \
+  && curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg \
+  && echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list \
+  && apt update \
+  && apt install -y kubectl
+
+RUN adduser --disabled-password --gecos '' --uid ${spark_uid} ${spark_username} && \
+  # Ensure the user has a valid home directory and permissions
+  mkdir -p /home/${spark_username} && \
+  chown ${spark_uid}:${spark_uid} /home/${spark_username}
+
+RUN chown -R sparkuser:sparkuser /opt/spark && \
+  chmod -R 775 /opt/spark
+
+ARG spark_uid=185
+ARG spark_username=sparkuser
+# Switch back to Spark USER uid
+USER ${spark_username}
